@@ -1,0 +1,1081 @@
+---
+title: "Taller Global — Modelos Lineales Generalizados"
+author: "Jorge Andrés Sánchez Duarte"
+date: "`r Sys.Date()`"
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    toc-title: "Contenido"
+    toc-location: left
+    number-sections: true
+    code-fold: true
+    code-tools: true
+    code-summary: "Ver código"
+    highlight-style: github
+    fig-align: center
+    fig-width: 9
+    fig-height: 5.5
+    df-print: kable
+    smooth-scroll: true
+    embed-resources: true
+    css: styles.css
+execute:
+  warning: false
+  message: false
+  cache: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  fig.width   = 9,
+  fig.height  = 5.5,
+  fig.align   = "center",
+  dpi         = 150,
+  out.width   = "100%",
+  cache       = TRUE
+)
+```
+
+```{r librerias, include=FALSE}
+library(data.table)
+library(knitr)
+library(performance)
+library(car)
+library(glmnet)
+library(tidyverse)
+library(caret)
+library(psych)
+library(mlbench)
+library(kableExtra)
+library(lmtest)
+library(glmtoolbox)
+library(see)
+library(faraway)
+```
+
+---
+
+# Ejercicio 1 — Peso al nacer (Modelo Gaussiano) {#sec-ejercicio1}
+
+::: {.callout-note icon=false}
+## Contexto
+**Fuente:** Dobson y Barnett (2008, p. 23)
+
+Los siguientes datos corresponden a los **pesos al nacer** (en gramos) y la **edad gestacional estimada** (en semanas) de 24 bebés, clasificados por sexo.
+:::
+
+```{r datos-bebes}
+datos_bebes <- data.frame(
+  Sexo = factor(c(rep("Mujer", 12), rep("Hombre", 12))),
+  Edad = c(
+    40, 36, 40, 38, 42, 39, 40, 37, 36, 38, 39, 40,
+    40, 38, 40, 35, 36, 37, 41, 40, 37, 38, 40, 38
+  ),
+  Peso = c(
+    3317, 2729, 2935, 2754, 3210, 2817, 3126, 2539,
+    2412, 2991, 2875, 3231, 2968, 2795, 3163, 2925,
+    2625, 2847, 3292, 3473, 2628, 3176, 3421, 2975
+  )
+)
+
+datos_bebes |>
+  kable(caption = "Datos de bebés: peso al nacer y edad gestacional") |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE)
+```
+
+## a) Ajuste del modelo
+
+Se ajusta un **GLM de respuesta normal** con función de enlace identidad, incluyendo edad gestacional, sexo y su interacción:
+
+```{r modelo1}
+modelo1 <- glm(Peso ~ Edad * Sexo,
+               data   = datos_bebes,
+               family = gaussian(link = "identity"))
+```
+
+## b) Efecto de la edad gestacional por sexo {#sec-1b}
+
+::: {.callout-question icon=false}
+## Pregunta
+¿Es el efecto de la edad gestacional sobre el peso al nacer el mismo para niños y niñas? (α = 5%)
+:::
+
+```{r summary-modelo1}
+summary(modelo1)
+```
+
+::: {.callout-tip icon=false}
+## Conclusión
+El p-valor de la interacción `Edad:SexoMujer` es **0.664 > 0.05**, por lo tanto **no rechazamos H₀**. El efecto de la edad gestacional sobre el peso al nacer **es el mismo para niños y niñas**.
+:::
+
+## c) Diagnóstico del modelo
+
+::: {.panel-tabset}
+
+### Diagnóstico general
+
+```{r diag1-check, fig.height=8}
+check_model(modelo1)
+```
+
+Los residuos no son normales y existen serios problemas de multicolinealidad. Se observa un posible valor influyente y hay indicios de heterodasticidad.
+
+### Envelope y Cook's Distance
+
+```{r diag1-envelope}
+old <- sink(tempfile())
+par(mfrow = c(1, 2))
+envelope(modelo1)
+plot(cooks.distance(modelo1), main = "Distancia de Cook", ylab = "Cook's D")
+abline(h = 4 / (nrow(datos_bebes) - length(coef(modelo1)) - 1),
+       col = "red", lty = 2)
+sink(old)
+```
+
+:::
+
+::: {.callout-warning}
+Aplicando la regla empírica **4 / (n − p − 1) = 4/21 ≈ 0.19**, se identifica un valor influyente. El envelope presenta problemas y hay indicios de heterodasticidad. Este modelo tiene varios inconvenientes.
+:::
+
+## d) Interpretación de parámetros
+
+Solo interpretamos los coeficientes estadísticamente significativos:
+
+> **Edad:** Un aumento de una semana en la edad gestacional se asocia con un incremento esperado de **111.98 gramos** en el peso al nacer, manteniendo constante el efecto del sexo.
+
+## e) Predicción — Bebé de sexo femenino, 40 semanas
+
+```{r pred1}
+nuevo_dato <- data.frame(Edad = 40, Sexo = factor("Mujer"))
+pred1 <- predict(modelo1, newdata = nuevo_dato, type = "response")
+cat("Peso esperado:", round(pred1, 2), "gramos\n")
+```
+
+::: {.callout-tip icon=false}
+## Resultado
+Se estima que una bebé de sexo femenino con **40 semanas de gestación** tendrá un peso promedio de **`r round(pred1, 2)` gramos**.
+:::
+
+---
+
+# Ejercicio 2 — Senilidad y escala de Wechsler (Modelo Binomial) {#sec-ejercicio2}
+
+::: {.callout-note icon=false}
+## Contexto
+**Fuente:** Dobson y Barnett (2008, p. 140)
+
+Una muestra de personas de edad avanzada fue sometida a un examen psiquiátrico para detectar síntomas de senilidad. Se registró el puntaje en la **escala de inteligencia de Wechsler** y la presencia (1) o ausencia (0) de síntomas.
+:::
+
+```{r datos-senilidad, include=FALSE}
+datos_senilidad <- data.frame(
+  Escala = c(
+    9, 13, 6, 8, 10, 4, 14, 8, 11, 7, 9, 7, 5, 14,
+    13, 16, 10, 12, 11, 14, 15, 18, 7, 16, 9, 9, 11, 13, 15, 13, 10, 11, 6, 17, 14, 19,
+    9, 11, 14, 10, 16, 16, 14, 13, 13, 9, 15, 10, 11, 12, 4, 14, 20, 10
+  ),
+  Senilidad = c(
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+  )
+)
+```
+
+```{r head-senilidad}
+head(datos_senilidad) |>
+  kable(caption = "Primeras filas: escala de Wechsler y senilidad") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## a) Selección de función de enlace
+
+Se ajustan tres modelos con distintas funciones de enlace:
+
+```{r modelos2}
+modelo2.1 <- glm(Senilidad ~ Escala, data = datos_senilidad,
+                 family = binomial(link = "logit"))
+modelo2.2 <- glm(Senilidad ~ Escala, data = datos_senilidad,
+                 family = binomial(link = "probit"))
+modelo2.3 <- glm(Senilidad ~ Escala, data = datos_senilidad,
+                 family = binomial(link = "cloglog"))
+
+data.frame(
+  Enlace = c("Logit", "Probit", "Cloglog"),
+  AIC    = round(c(AIC(modelo2.1), AIC(modelo2.2), AIC(modelo2.3)), 4),
+  BIC    = round(c(BIC(modelo2.1), BIC(modelo2.2), BIC(modelo2.3)), 4)
+) |>
+  kable(caption = "Comparación de modelos por AIC y BIC") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
+  row_spec(1, bold = TRUE, color = "white", background = "#2c7bb6")
+```
+
+::: {.callout-tip icon=false}
+## Modelo seleccionado: Logit
+Aunque el probit obtiene el menor AIC/BIC, la diferencia es marginal. Se elige el **enlace logit** por su **mayor interpretabilidad** (odds ratios).
+:::
+
+## b) Pruebas de hipótesis
+
+::: {.panel-tabset}
+
+### Prueba de Wald
+
+```{r wald2}
+summary(modelo2.1)
+```
+
+El p-valor de la escala de Wechsler es **0.00453 < 0.05** → se rechaza H₀. El puntaje de Wechsler **sí afecta** la probabilidad de tener senilidad.
+
+### Razón de Verosimilitudes
+
+```{r lrt2}
+modelo2.0 <- glm(Senilidad ~ 1, data = datos_senilidad,
+                 family = binomial(link = "probit"))
+lrtest(modelo2.0, modelo2.1)
+```
+
+Con p-valor < 0.05, la inclusión del puntaje de Wechsler **mejora significativamente** el ajuste del modelo.
+
+:::
+
+## c) Diagnóstico del modelo
+
+::: {.panel-tabset}
+
+### Diagnóstico general
+
+```{r diag2-check, fig.height=8}
+check_model(modelo2.1)
+```
+
+Residuos uniformes. La distribución de datos observados se aproxima bien a los simulados. No hay evidencia clara de violación de linealidad.
+
+### Envelope y Cook's Distance
+
+```{r diag2-envelope}
+old <- sink(tempfile())
+par(mfrow = c(1, 2))
+envelope(modelo2.1)
+plot(modelo2.1, which = 4, main = "Distancia de Cook")
+abline(h = 4 / (nrow(datos_senilidad) - 2), col = "red", lty = 2)
+sink(old)
+```
+
+:::
+
+::: {.callout-warning}
+Regla empírica **4/(n − p − 1) = 4/53 ≈ 0.075**: posibles 2–3 datos influyentes. El envelope luce aceptable. En general, el modelo se comporta bien.
+:::
+
+## d) Interpretación de parámetros
+
+> **exp(−0.3235) = 0.7235** → Por cada punto adicional en la escala de Wechsler, el *odds* de tener senilidad disminuye aproximadamente un **27.65%**.
+
+## e) Predicción — 15 puntos en la escala de Wechsler
+
+```{r pred2}
+pred2 <- predict(modelo2.1, newdata = data.frame(Escala = 15), type = "response")
+cat("Probabilidad estimada:", round(pred2, 6), "\n")
+```
+
+::: {.callout-tip icon=false}
+## Resultado
+La probabilidad estimada de presentar síntomas de senilidad con **15 puntos** en la escala de Wechsler es **`r round(pred2, 4)`** (~`r round(pred2 * 100, 2)`%).
+:::
+
+---
+
+# Ejercicio 3 — Mortalidad de insectos (Rotenona) {#sec-ejercicio3}
+
+::: {.callout-note icon=false}
+## Contexto
+**Fuente:** Olsson (2002, p. 33)
+
+Experimento donde lotes de ~50 insectos fueron expuestos a distintas concentraciones del plaguicida **rotenona**. Se registró el número de insectos muertos.
+:::
+
+```{r datos-insectos, include=FALSE}
+datos_insectos <- data.frame(
+  Dosis     = c(0.41, 0.58, 0.71, 0.89, 1.01),
+  Expuestos = c(50, 48, 46, 49, 50),
+  Muertos   = c(6, 16, 24, 42, 44)
+)
+```
+
+```{r head-insectos}
+datos_insectos |>
+  mutate(Tasa = round(Muertos / Expuestos, 3)) |>
+  kable(caption = "Datos de mortalidad por concentración de rotenona") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## a) Gráfico de tasa de mortalidad
+
+```{r grafico3a}
+tasa <- datos_insectos$Muertos / datos_insectos$Expuestos
+
+plot(y = tasa, x = datos_insectos$Dosis,
+     main = "Tasa de Mortalidad vs. Concentración de Rotenona",
+     xlab = "Concentración (Dosis)", ylab = "Tasa de Mortalidad",
+     pch = 19, col = "#2c7bb6", cex = 1.5)
+lines(y = tasa, x = datos_insectos$Dosis, col = "#2c7bb6", lwd = 2)
+```
+
+Se observa una **relación directa** entre la dosis y la tasa de mortalidad: a mayor concentración, mayor proporción de insectos muertos.
+
+## b) Comparación gráfica de modelos
+
+```{r modelos3}
+modelo3.1 <- glm(cbind(Muertos, Expuestos - Muertos) ~ Dosis,
+                 data = datos_insectos, family = binomial(link = "logit"))
+modelo3.2 <- glm(cbind(Muertos, Expuestos - Muertos) ~ Dosis,
+                 data = datos_insectos, family = binomial(link = "probit"))
+modelo3.3 <- glm(cbind(Muertos, Expuestos - Muertos) ~ Dosis,
+                 data = datos_insectos, family = binomial(link = "cloglog"))
+```
+
+```{r grafico3b, include=FALSE}
+dosis_pred  <- seq(min(datos_insectos$Dosis), max(datos_insectos$Dosis), length.out = 100)
+nuevos_datos <- data.frame(Dosis = dosis_pred)
+pred_logit  <- predict(modelo3.1, newdata = nuevos_datos, type = "response")
+pred_probit <- predict(modelo3.2, newdata = nuevos_datos, type = "response")
+pred_cloglog <- predict(modelo3.3, newdata = nuevos_datos, type = "response")
+```
+
+```{r grafico3b-plot}
+plot(y = tasa, x = datos_insectos$Dosis,
+     main = "Tasa de Mortalidad — Comparación de modelos",
+     xlab = "Concentración (Dosis)", ylab = "Tasa de Mortalidad",
+     pch = 19, col = "black", cex = 1.5, ylim = c(0, 1))
+lines(dosis_pred, pred_logit,   col = "#d7191c", lwd = 2.5)
+lines(dosis_pred, pred_probit,  col = "#1a9641", lwd = 2.5)
+lines(dosis_pred, pred_cloglog, col = "#2c7bb6", lwd = 2.5)
+legend("topleft",
+       legend = c("Observado", "Logit", "Probit", "Cloglog"),
+       col    = c("black", "#d7191c", "#1a9641", "#2c7bb6"),
+       lty    = c(NA, 1, 1, 1),
+       pch    = c(19, NA, NA, NA),
+       lwd    = 2, bty = "n")
+```
+
+Los modelos **logit** y **probit** ajustan mejor los datos observados.
+
+## c) Selección del mejor modelo
+
+```{r comparacion3}
+data.frame(
+  Enlace   = c("Logit", "Probit", "Cloglog"),
+  AIC      = round(c(AIC(modelo3.1),      AIC(modelo3.2),      AIC(modelo3.3)),      4),
+  Desviance = round(c(deviance(modelo3.1), deviance(modelo3.2), deviance(modelo3.3)), 4)
+) |>
+  kable(caption = "Comparación de modelos — AIC y Desvío") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
+  row_spec(1, bold = TRUE, color = "white", background = "#2c7bb6")
+```
+
+::: {.callout-tip icon=false}
+## Modelo seleccionado: Logit
+Obtuvo el **menor AIC y desvío**. Además produce predicciones coherentes con los datos observados.
+:::
+
+## d) Pruebas de hipótesis
+
+::: {.panel-tabset}
+
+### Prueba de Wald
+
+```{r wald3}
+summary(modelo3.1)
+```
+
+P-valor = **1.16e-15 < 0.05** → La concentración del plaguicida **sí afecta** la probabilidad de muerte.
+
+### Razón de Verosimilitudes
+
+```{r lrt3}
+modelo3.0 <- glm(cbind(Muertos, Expuestos - Muertos) ~ 1,
+                 data = datos_insectos, family = binomial(link = "logit"))
+lrtest(modelo3.0, modelo3.1)
+```
+
+P-valor = **2.2e-16 < 0.05** → La dosis es un predictor **esencial** para modelar la probabilidad de muerte.
+
+:::
+
+## e) Diagnóstico del modelo
+
+::: {.panel-tabset}
+
+### Diagnóstico general
+
+```{r diag3-check, fig.height=8}
+check_model(modelo3.1)
+```
+
+Los residuos se distribuyen uniformemente y la capacidad predictiva es razonable.
+
+### Envelope y Cook's Distance
+
+```{r diag3-envelope}
+old <- sink(tempfile())
+par(mfrow = c(1, 2))
+envelope(modelo3.1)
+plot(modelo3.1, which = 4, main = "Distancia de Cook")
+abline(h = 4 / 3, col = "red", lty = 2)
+sink(old)
+```
+
+### Sobredispersión
+
+```{r diag3-od}
+check_overdispersion(modelo3.1)
+```
+
+:::
+
+::: {.callout-tip}
+El envelope luce bien. La regla empírica 4/(n−p−1) = 4/3 = 0.75 no señala valores influyentes. **No hay sobredispersión**. Es un modelo muy adecuado.
+:::
+
+## f) Dosis Letal 50% (DL₅₀)
+
+```{r dl50}
+beta0 <- coef(modelo3.1)[1]
+beta1 <- coef(modelo3.1)[2]
+DL50  <- -(beta0 / beta1)
+cat("DL50:", round(DL50, 6), "\n")
+```
+
+**Intervalo de confianza al 95% (Método Delta):**
+
+```{r dl50-ic}
+vcov_mat <- vcov(modelo3.1)
+var_dl50 <- (1/beta1^2) * (vcov_mat[1,1] -
+               2*(beta0/beta1)*vcov_mat[1,2] +
+               (beta0^2/beta1^2)*vcov_mat[2,2])
+se_dl50 <- sqrt(var_dl50)
+ic <- c(DL50 - 1.96*se_dl50, DL50 + 1.96*se_dl50)
+cat("IC 95%: [", round(ic[1], 4), ",", round(ic[2], 4), "]\n")
+```
+
+::: {.callout-tip icon=false}
+## Resultado
+Con una dosis de **`r round(DL50, 4)`** se garantiza una mortalidad del 50%. El IC 95% es [`r round(ic[1], 4)`, `r round(ic[2], 4)`].
+:::
+
+---
+
+# Ejercicio 4 — Cáncer en ratones (Carcinógeno 2-AAF) {#sec-ejercicio4}
+
+::: {.callout-note icon=false}
+## Contexto
+**Fuente:** Zhang y Zelterman (1999)
+
+Experimento donde ratones hembra fueron alimentados con dosis bajas del carcinógeno **2-acetilaminofluoreno (2-AAF)**. Se analiza la incidencia de cáncer de **hígado** y **vejiga** por separado.
+:::
+
+```{r datos-cancer, include=FALSE}
+datos_cancer <- data.frame(
+  Dosis      = c(0.00, 0.30, 0.35, 0.45, 0.60, 0.75, 1.00, 1.50),
+  Exp_Higado = c(555, 2014, 1102, 550, 441, 382, 213, 211),
+  Enf_Higado = c(6, 34, 20, 15, 13, 17, 19, 24),
+  Exp_Vejiga = c(101, 443, 200, 103, 66, 75, 31, 11),
+  Enf_Vejiga = c(1, 5, 0, 2, 2, 12, 21, 11)
+)
+Tasa_Higado <- datos_cancer$Enf_Higado / datos_cancer$Exp_Higado
+Tasa_Vejiga <- datos_cancer$Enf_Vejiga / datos_cancer$Exp_Vejiga
+```
+
+```{r head-cancer}
+datos_cancer |>
+  mutate(Tasa_Higado = round(Tasa_Higado, 4),
+         Tasa_Vejiga = round(Tasa_Vejiga, 4)) |>
+  kable(caption = "Datos de incidencia de cáncer por dosis de carcinógeno") |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+## a) Ajuste y selección de modelos
+
+```{r modelos4}
+mod_bin_higado  <- glm(cbind(Enf_Higado, Exp_Higado - Enf_Higado) ~ Dosis,
+                       family = binomial(link = "logit"), data = datos_cancer)
+mod_pois_higado <- glm(Enf_Higado ~ Dosis,
+                       family = poisson(link = "log"), data = datos_cancer)
+mod_bin_vejiga  <- glm(cbind(Enf_Vejiga, Exp_Vejiga - Enf_Vejiga) ~ Dosis,
+                       family = binomial(link = "logit"), data = datos_cancer)
+mod_pois_vejiga <- glm(Enf_Vejiga ~ Dosis,
+                       family = poisson(link = "log"), data = datos_cancer)
+
+data.frame(
+  Órgano  = c("Hígado", "Hígado", "Vejiga", "Vejiga"),
+  Modelo  = c("Binomial", "Poisson", "Binomial", "Poisson"),
+  AIC     = round(c(AIC(mod_bin_higado), AIC(mod_pois_higado),
+                    AIC(mod_bin_vejiga), AIC(mod_pois_vejiga)), 3)
+) |>
+  kable(caption = "Comparación de modelos por AIC") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
+  row_spec(c(1, 3), bold = TRUE, color = "white", background = "#2c7bb6")
+```
+
+::: {.callout-tip icon=false}
+## Decisión
+- **Hígado:** Las tasas son bajas y los AIC similares → se elige **Binomial** por consistencia.  
+- **Vejiga:** Las tasas no son todas pequeñas y el AIC difiere → **Binomial** es claramente superior.
+:::
+
+## b) Pruebas de hipótesis
+
+::: {.panel-tabset}
+
+### Hígado — Wald
+
+```{r wald4-higado}
+summary(mod_bin_higado)
+```
+
+P-valor = **2e-16 < 0.05** → La dosis afecta significativamente la incidencia de cáncer de hígado.
+
+### Vejiga — Wald
+
+```{r wald4-vejiga}
+summary(mod_bin_vejiga)
+```
+
+P-valor = **2e-16 < 0.05** → La dosis afecta significativamente la incidencia de cáncer de vejiga.
+
+### Razón de Verosimilitudes
+
+```{r lrt4}
+modelo4.01 <- glm(cbind(Enf_Higado, Exp_Higado - Enf_Higado) ~ 1,
+                  family = binomial(link = "logit"), data = datos_cancer)
+modelo4.02 <- glm(cbind(Enf_Vejiga, Exp_Vejiga - Enf_Vejiga) ~ 1,
+                  family = binomial(link = "logit"), data = datos_cancer)
+
+cat("--- Hígado ---\n")
+lrtest(modelo4.01, mod_bin_higado)
+cat("--- Vejiga ---\n")
+lrtest(modelo4.02, mod_bin_vejiga)
+```
+
+En ambos casos p-valor = 2.2e-16 → La dosis es un predictor **esencial** en los dos modelos.
+
+:::
+
+## c) Diagnóstico
+
+::: {.panel-tabset}
+
+### Hígado — Diagnóstico general
+
+```{r diag4-higado, fig.height=8}
+check_model(mod_bin_higado)
+```
+
+El modelo se comporta bien: residuos uniformes y capacidad predictiva razonable.
+
+### Hígado — Envelope
+
+```{r diag4-higado-env}
+old <- sink(tempfile())
+par(mfrow = c(1, 2))
+envelope(mod_bin_higado)
+plot(mod_bin_higado, which = 4, main = "Cook — Hígado")
+sink(old)
+```
+
+Se identifica un valor influyente en dosis = 1.50. El envelope no muestra problemas. **Sin sobredispersión.**
+
+### Vejiga — Diagnóstico general
+
+```{r diag4-vejiga, fig.height=8}
+check_model(mod_bin_vejiga)
+```
+
+### Vejiga — Envelope
+
+```{r diag4-vejiga-env}
+old <- sink(tempfile())
+par(mfrow = c(1, 2))
+envelope(mod_bin_vejiga)
+plot(mod_bin_vejiga, which = 4, main = "Cook — Vejiga")
+sink(old)
+```
+
+El envelope luce bien. Se observan dos valores influyentes (dosis 0.30 y 1.50). **Sin sobredispersión.**
+
+:::
+
+## d) Interpretación de parámetros
+
+| Modelo | Exp(β̂) | Interpretación |
+|--------|---------|----------------|
+| **Hígado** | exp(1.7624) = **5.826** | Por cada unidad adicional de dosis, el *odds* de cáncer de hígado se multiplica por **5.826**. |
+| **Vejiga** | exp(7.8752) = **2,631.2** | Por cada unidad adicional de dosis, el *odds* de cáncer de vejiga se multiplica por **2,631.2**. |
+
+---
+
+# Ejercicio 5 — Fallas en equipos electrónicos (Modelo Poisson) {#sec-ejercicio5}
+
+::: {.callout-note icon=false}
+## Contexto
+**Fuente:** Jorgenson (1961)
+
+Datos de fallas en piezas electrónicas que operan en dos modos. Se registra el tiempo de funcionamiento en cada modo y el número total de fallas.
+:::
+
+```{r datos-fallas, include=FALSE}
+datos_fallas <- data.frame(
+  Modo1  = c(33.3, 52.2, 64.7, 137.0, 125.9, 116.3, 131.7, 85.0, 91.9),
+  Modo2  = c(25.3, 14.4, 32.5, 20.5, 97.6, 53.6, 56.6, 87.3, 47.8),
+  Fallas = c(15, 9, 14, 24, 27, 27, 23, 18, 22)
+)
+```
+
+```{r head-fallas}
+datos_fallas |>
+  kable(caption = "Fallas en equipos electrónicos por tiempo de operación") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## a) Selección del mejor modelo Poisson
+
+```{r modelos5}
+modelo5.1 <- glm(Fallas ~ Modo1 + Modo2, data = datos_fallas,
+                 family = poisson(link = "log"))
+modelo5.2 <- glm(Fallas ~ Modo1 + Modo2, data = datos_fallas,
+                 family = poisson(link = "identity"))
+modelo5.3 <- glm(Fallas ~ Modo1 + Modo2, data = datos_fallas,
+                 family = poisson(link = "sqrt"))
+
+data.frame(
+  Enlace    = c("Log", "Identidad", "Raíz cuadrada"),
+  AIC       = round(c(AIC(modelo5.1),      AIC(modelo5.2),      AIC(modelo5.3)),      4),
+  Desviance = round(c(deviance(modelo5.1), deviance(modelo5.2), deviance(modelo5.3)), 4)
+) |>
+  kable(caption = "Comparación de funciones de enlace — Poisson") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
+  row_spec(1, bold = TRUE, color = "white", background = "#2c7bb6")
+```
+
+::: {.callout-tip icon=false}
+## Modelo seleccionado: Enlace Log
+Tanto el AIC como la devianza apuntan al **enlace logarítmico** como el mejor modelo.
+:::
+
+## b) ¿El número de fallas depende del Modo 1?
+
+::: {.panel-tabset}
+
+### Prueba de Wald
+
+```{r wald5}
+summary(modelo5.1)
+```
+
+Modo 1 es significativo (p-valor = **0.00387 < 0.05**) → el tiempo en Modo 1 **sí afecta** el número de fallas.
+
+### Razón de Verosimilitudes — Modo 1
+
+```{r lrt5-modo1}
+modelo5.01 <- glm(Fallas ~ Modo2, data = datos_fallas, family = poisson(link = "log"))
+lrtest(modelo5.01, modelo5.1)
+```
+
+P-valor = **0.003851 < 0.05** → el modelo completo es superior al reducido. El Modo 1 es un factor relevante.
+
+:::
+
+## c) ¿El número de fallas depende del Modo 2?
+
+::: {.panel-tabset}
+
+### Razón de Verosimilitudes — Modo 2
+
+```{r lrt5-modo2}
+modelo5.02 <- glm(Fallas ~ Modo1, data = datos_fallas, family = poisson(link = "log"))
+lrtest(modelo5.02, modelo5.1)
+```
+
+P-valor = **0.3697 > 0.05** → **No hay diferencias** entre el modelo completo y el reducido. El Modo 2 **no es** un factor importante.
+
+:::
+
+## d) Diagnóstico del modelo
+
+::: {.panel-tabset}
+
+### Diagnóstico general
+
+```{r diag5-check, fig.height=8}
+check_model(modelo5.1)
+```
+
+Sin problemas de multicolinealidad. Residuos uniformes. Buen modelamiento predictivo. Sin heterodasticidad.
+
+### Envelope y Cook's Distance
+
+```{r diag5-env}
+old <- sink(tempfile())
+par(mfrow = c(1, 2))
+envelope(modelo5.1)
+plot(modelo5.1, which = 4, main = "Distancia de Cook")
+sink(old)
+```
+
+### Sobredispersión
+
+```{r diag5-od}
+check_overdispersion(modelo5.1)
+```
+
+:::
+
+::: {.callout-tip}
+El envelope se ve muy bien. Sin valores influyentes. **Sin sobredispersión.** El modelo cumple con todos los supuestos.
+:::
+
+## e) Interpretación de parámetros
+
+> **exp(0.007015) = 1.0070** → Por cada unidad adicional de tiempo en el **Modo 1** (manteniendo constante el Modo 2), el número esperado de fallas aumenta un **0.70%**.
+
+---
+
+# Ejercicio 6 — Lesiones por virus y rayos X (Modelo Poisson) {#sec-ejercicio6}
+
+::: {.callout-note icon=false}
+## Contexto
+**Fuente:** Olsson (2002, p. 29)
+
+Se contó el número de lesiones causadas por un virus tras distintos tiempos de exposición a rayos X.
+:::
+
+```{r datos-lesiones}
+datos_lesiones <- data.frame(
+  tiempo   = c(0, 15, 30, 45, 60),
+  lesiones = c(271, 108, 59, 29, 12)
+)
+datos_lesiones |>
+  kable(caption = "Lesiones virales por tiempo de exposición a rayos X") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## a) Gráfico: lesiones vs tiempo de exposición
+
+```{r grafico6a}
+plot(x = datos_lesiones$tiempo, y = datos_lesiones$lesiones,
+     main = "Lesiones por Virus vs. Tiempo de Exposición a Rayos X",
+     xlab = "Tiempo (minutos)", ylab = "Número de lesiones",
+     pch = 19, col = "#d7191c", cex = 1.5)
+lines(datos_lesiones$tiempo, datos_lesiones$lesiones, col = "#d7191c", lwd = 2)
+```
+
+Se observa una **relación inversa**: a mayor tiempo de exposición, menor número de lesiones.
+
+## b) Selección de modelo Poisson
+
+```{r modelos6}
+modelo6.1 <- glm(lesiones ~ tiempo, family = poisson(link = "log"),      data = datos_lesiones)
+modelo6.2 <- glm(lesiones ~ tiempo, family = poisson(link = "identity"), data = datos_lesiones)
+modelo6.3 <- glm(lesiones ~ tiempo, family = poisson(link = "sqrt"),     data = datos_lesiones)
+
+data.frame(
+  Enlace    = c("Log", "Identidad", "Raíz cuadrada"),
+  AIC       = round(c(AIC(modelo6.1),      AIC(modelo6.2),      AIC(modelo6.3)),      4),
+  Desviance = round(c(deviance(modelo6.1), deviance(modelo6.2), deviance(modelo6.3)), 4)
+) |>
+  kable(caption = "Comparación de funciones de enlace — Lesiones virales") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
+  row_spec(1, bold = TRUE, color = "white", background = "#2c7bb6")
+```
+
+::: {.callout-tip icon=false}
+## Modelo seleccionado: Enlace Log
+Es muy superior a los demás, con el menor AIC y desvío.
+:::
+
+## c) Pruebas de hipótesis
+
+::: {.panel-tabset}
+
+### Prueba de Wald
+
+```{r wald6}
+summary(modelo6.1)
+```
+
+P-valor = **2e-16 < 0.05** → El tiempo de exposición es estadísticamente significativo.
+
+### Razón de Verosimilitudes
+
+```{r lrt6}
+modelo6.0 <- glm(lesiones ~ 1, family = poisson(link = "log"), data = datos_lesiones)
+lrtest(modelo6.0, modelo6.1)
+```
+
+El modelo completo (con tiempo) es **muy superior** al modelo nulo. El tiempo es una variable crucial.
+
+:::
+
+## d) Diagnóstico
+
+::: {.panel-tabset}
+
+### Diagnóstico general
+
+```{r diag6-check, fig.height=8}
+check_model(modelo6.1)
+```
+
+Se observan problemas en las predicciones, posible heterodasticidad, residuos no uniformes y un posible valor influyente.
+
+### Envelope y Cook's Distance
+
+```{r diag6-env}
+old <- sink(tempfile())
+par(mfrow = c(1, 2))
+envelope(modelo6.1)
+plot(modelo6.1, which = 4, main = "Distancia de Cook")
+sink(old)
+```
+
+### Sobredispersión
+
+```{r diag6-od}
+check_overdispersion(modelo6.1)
+```
+
+:::
+
+::: {.callout-warning}
+El envelope no presenta inconvenientes. El dato influyente es claro en la gráfica de Cook. **No se detecta sobredispersión** → los problemas se deben principalmente al dato influyente.
+:::
+
+## e) Interpretación de parámetros
+
+> **exp(−0.051326) = 0.9500** → Por cada minuto adicional de exposición a rayos X, el número esperado de lesiones disminuye aproximadamente un **5%**.
+
+## f) Predicción — 30 minutos de exposición
+
+```{r pred6}
+pred6 <- predict(modelo6.1, data.frame(tiempo = 30), type = "response")
+cat("Lesiones esperadas:", round(pred6, 3), "\n")
+```
+
+::: {.callout-tip icon=false}
+## Resultado
+Tras **30 minutos** de exposición a rayos X, se espera un total de **`r round(pred6, 2)` lesiones** causadas por el virus.
+:::
+
+---
+
+# Ejercicio 7 — Cáncer de piel por ciudad y edad (Poisson con offset) {#sec-ejercicio7}
+
+::: {.callout-note icon=false}
+## Contexto
+**Fuente:** Hand et al. (1994, p. 241)
+
+Incidencia de **cáncer de piel** por rango de edad en mujeres de St. Paul (Minnesota) y Fort Worth (Texas). Se espera mayor incidencia en Texas por mayor exposición solar.
+:::
+
+```{r datos-piel, include=FALSE}
+datos_piel <- data.frame(
+  Ciudad = c(rep("StPaul", 7), rep("ForthWorth", 7)),
+  Edad   = rep(c("15-24","25-34","35-44","45-54","55-64","65-74","75+"), 2),
+  Casos  = c(1, 16, 30, 71, 102, 130, 40, 4, 38, 119, 221, 259, 310, 65),
+  Poblacion = c(172675, 123065, 96216, 92051, 72159, 54722, 8328,
+                181343, 146207, 121374, 111353, 83004, 55932, 7583)
+)
+```
+
+```{r head-piel}
+datos_piel |>
+  kable(caption = "Incidencia de cáncer de piel por ciudad y rango de edad") |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+## a) Ajuste del modelo Poisson
+
+```{r modelo7}
+modelo7.1 <- glm(Casos ~ Ciudad + Edad, family = poisson(link = "log"), data = datos_piel)
+```
+
+::: {.callout-note}
+No se incluye el offset de población porque el objetivo no es modelar tasas ajustadas por tamaño, sino comparar incidencias entre ciudades y grupos de edad.
+:::
+
+## b) Pruebas de hipótesis — Efecto ciudad
+
+::: {.panel-tabset}
+
+### Prueba de Wald
+
+```{r wald7}
+summary(modelo7.1)
+```
+
+Todas las variables son relevantes. La ciudad presenta diferencias altamente significativas (p-valor = **2e-16**).
+
+### Razón de Verosimilitudes
+
+```{r lrt7}
+modelo7.0 <- glm(Casos ~ Edad, family = poisson(link = "log"), data = datos_piel)
+lrtest(modelo7.0, modelo7.1)
+```
+
+El modelo con ciudad es **significativamente superior** al reducido → la ciudad es una variable importante.
+
+:::
+
+## c) Diagnóstico
+
+::: {.panel-tabset}
+
+### Diagnóstico general
+
+```{r diag7-check, fig.height=8}
+check_model(modelo7.1)
+```
+
+Las predicciones no son las mejores. Residuos no uniformes. Posible heterodasticidad. Sin problemas de multicolinealidad.
+
+### Envelope y Cook's Distance
+
+```{r diag7-env}
+old <- sink(tempfile())
+par(mfrow = c(1, 2))
+envelope(modelo7.1)
+plot(modelo7.1, which = 4, main = "Distancia de Cook")
+sink(old)
+```
+
+### Sobredispersión
+
+```{r diag7-od}
+check_overdispersion(modelo7.1)
+```
+
+:::
+
+::: {.callout-warning}
+**Hay sobredispersión.** El modelo presenta varios inconvenientes. Un modelo **quasi-Poisson** podría mejorar el ajuste y resolver los problemas observados.
+:::
+
+## d) ¿Es mayor la incidencia en Fort Worth que en St. Paul?
+
+> **Sí.** Fort Worth es la categoría de referencia. Exponenciando el coeficiente:
+> **exp(−0.95748) = 0.384** → La tasa esperada en St. Paul es un **61.6% menor** que en Fort Worth.
+
+## e) Predicción — Mayores de 75 años, St. Paul, población = 10.000
+
+```{r pred7}
+nuevo_dato <- data.frame(Ciudad = "StPaul", Edad = "75+")
+pre  <- predict(modelo7.1, newdata = nuevo_dato, type = "response")
+tasa <- pre / 8328
+casos_esperados <- tasa * 10000
+cat("Casos esperados:", round(casos_esperados, 1), "\n")
+```
+
+::: {.callout-tip icon=false}
+## Resultado
+El número esperado de casos de cáncer de piel en personas mayores de **75 años** en **St. Paul**, con una población de 10.000 personas, es de **`r round(casos_esperados, 0)` casos**.
+:::
+
+---
+
+# Ejercicio 8 — Resistencia de semiconductores (Modelo Gamma) {#sec-ejercicio8}
+
+::: {.callout-note icon=false}
+## Contexto
+**Fuente:** Myers y Montgomery (1997)
+
+Proceso de fabricación de semiconductores con cuatro factores que influyen en la **resistencia de la placa**. La experiencia previa sugiere una distribución positiva y sesgada a la derecha → modelo Gamma.
+:::
+
+```{r datos-wafer, include=FALSE}
+data(wafer, package = "faraway")
+datos <- wafer
+```
+
+```{r head-wafer}
+head(datos) |>
+  kable(caption = "Primeras filas: datos de resistencia de semiconductores (wafer)") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## a) Selección de función de enlace — Gamma
+
+```{r modelos8}
+modelo8.1 <- glm(resist ~ x1 + x2 + x3 + x4, family = Gamma(link = "identity"), data = datos)
+modelo8.2 <- glm(resist ~ x1 + x2 + x3 + x4, family = Gamma(link = "log"),      data = datos)
+modelo8.3 <- glm(resist ~ x1 + x2 + x3 + x4, family = Gamma(link = "inverse"),  data = datos)
+
+data.frame(
+  Enlace = c("Identidad", "Logarítmico", "Inverso"),
+  AIC    = round(c(AIC(modelo8.1), AIC(modelo8.2), AIC(modelo8.3)), 4)
+) |>
+  kable(caption = "Comparación de funciones de enlace — Gamma") |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
+  row_spec(3, bold = TRUE, color = "white", background = "#2c7bb6")
+```
+
+::: {.callout-tip icon=false}
+## Modelo seleccionado: Enlace Inverso
+Obtuvo el **menor AIC**.
+:::
+
+## b) ¿Qué factores afectan la resistencia? (α = 5%)
+
+```{r summary8}
+summary(modelo8.3)
+```
+
+::: {.callout-tip icon=false}
+## Conclusión
+- **x2** (p-valor = 0.000101 < 0.05) ✅ Significativo  
+- **x3** (p-valor = 0.003560 < 0.05) ✅ Significativo  
+- **x1** y **x4**: No son significativos
+
+Los factores **2 y 3** son los que afectan la resistencia de las placas semiconductoras.
+:::
+
+## c) Diagnóstico
+
+::: {.panel-tabset}
+
+### Diagnóstico general
+
+```{r diag8-check, fig.height=8}
+check_model(modelo8.3)
+```
+
+Buena capacidad predictiva. Sin multicolinealidad. Residuos uniformes. El modelo no parece muy homogéneo.
+
+### Envelope y Cook's Distance
+
+```{r diag8-env}
+old <- sink(tempfile())
+par(mfrow = c(1, 2))
+envelope(modelo8.3)
+plot(modelo8.3, which = 4, main = "Distancia de Cook")
+sink(old)
+```
+
+:::
+
+::: {.callout-warning}
+El envelope refleja problemas, probablemente asociados al problema de homogeneidad. **Sin valores influyentes.**
+:::
+
+---
+
+::: {.callout-note icon=false appearance="simple"}
+## 📄 Información del documento
+Documento elaborado como parte del taller de **Modelos Lineales Generalizados**.  
+**Autor:** Jorge Andrés Sánchez Duarte | **Fecha:** `r Sys.Date()`
+:::
