@@ -8,7 +8,7 @@ A continuación se presentan los archivos que componen este taller práctico. Pu
 
 | Recurso | Descripción | Enlace de Acceso |
 | :--- | :--- | :--- |
-| **Reporte HTML** | Visualización interactiva y resultados del taller estadístico. | [🌐 Abrir Taller (HTML)](./Taller_global_glm.html) |
+| **Reporte HTML** | Visualización interactiva y resultados del taller estadístico. |[🌐 Abrir Taller (HTML)](https://raw.githack.com/josanchezdu/GLM/main/Taller_global_glm.html) |
 | **Código Fuente** | Archivo base en Quarto con el desarrollo del código. | [📄 Ver Código (.qmd)](./Taller_global_glm.qmd) |
 
 ---
