@@ -13,7 +13,7 @@ A continuación se presentan los archivos que componen este taller práctico. Pu
 
 ---
 
-## 🛠️ Herramientas Utilizadas
+##  Herramientas Utilizadas
 * **Entorno de desarrollo:** Quarto Markdown (`.qmd`)
 * **Modelación:** R / Python (Modelos Lineales Generalizados)
 * **Salida:** HTML dinámico
